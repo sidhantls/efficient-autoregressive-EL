@@ -2,11 +2,15 @@ import torch
 
 from src.beam_search import beam_search
 from src.utils import label_smoothed_nll_loss
-
+import pdb
+import torch.nn.functional as F
+import faiss
+from sentence_transformers import SentenceTransformer
+import numpy as np
 
 class LSTM(torch.nn.Module):
     def __init__(
-        self, bos_token_id, pad_token_id, eos_token_id, embeddings, lm_head, dropout=0
+        self, bos_token_id, pad_token_id, eos_token_id, embeddings, lm_head, tokenizer, st_model, faiss_index, dropout=0
     ):
         super().__init__()
 
@@ -21,6 +25,13 @@ class LSTM(torch.nn.Module):
             input_size=2 * 768,
             hidden_size=768,
         )
+        self.tokenizer = tokenizer 
+        self.st_model = st_model
+        self.faiss_index = faiss_index
+
+        self.multihead_attn = torch.nn.MultiheadAttention(768, 4)
+        self.st_proj = torch.nn.Linear(384, 768)
+        self.fc_post_att = torch.nn.Linear(768*2, 768)
 
     def _roll(
         self,
@@ -32,7 +43,11 @@ class LSTM(torch.nn.Module):
         return_lprob=False,
         return_dict=False,
     ):
-
+        """
+        decoder_context: bs, 768
+        input_ids: bs, max_mention_len: bs, 3
+        
+        """
         dropout_mask = 1
         if self.training:
             dropout_mask = (torch.rand_like(decoder_hidden) > self.dropout).float()
@@ -41,11 +56,23 @@ class LSTM(torch.nn.Module):
         all_contexts = []
 
         emb = self.embeddings(input_ids)
+
+        mention_strings = decode_input_ids(input_ids, self.tokenizer)
+        neighbors = retrieve_top_candidates(mention_strings, self.st_model, self.faiss_index)
+        neighbors = self.st_proj(neighbors)
+
+        attn_output, attn_output_weights = self.multihead_attn(decoder_context[:, None, :], neighbors, neighbors)
+        attn_output = attn_output[:, 0, :]
+        
+        decoder_hidden = torch.cat([decoder_hidden, attn_output], dim=1)
+        decoder_hidden = F.relu(self.fc_post_att(decoder_hidden))
+
         for t in range(emb.shape[1]):
             decoder_hidden, decoder_context = self.lstm_cell(
                 torch.cat((emb[:, t], decoder_append), dim=-1),
                 (decoder_hidden, decoder_context),
             )
+
             decoder_hidden *= dropout_mask
             all_hiddens.append(decoder_hidden)
             all_contexts.append(decoder_context)
@@ -151,13 +178,16 @@ class LSTM(torch.nn.Module):
 
 class EntityLinkingLSTM(torch.nn.Module):
     def __init__(
-        self, bos_token_id, pad_token_id, eos_token_id, embeddings, lm_head, dropout=0
+        self, bos_token_id, pad_token_id, eos_token_id, embeddings, lm_head, tokenizer, faiss_index, dropout=0
     ):
         super().__init__()
 
         self.bos_token_id = bos_token_id
         self.pad_token_id = pad_token_id
         self.eos_token_id = eos_token_id
+
+        self.st_model = SentenceTransformer('all-MiniLM-L6-v2')
+        self.faiss_index = faiss_index
 
         self.prj = torch.nn.Sequential(
             torch.nn.LayerNorm(768 * 2),
@@ -175,6 +205,9 @@ class EntityLinkingLSTM(torch.nn.Module):
             eos_token_id,
             embeddings,
             lm_head,
+            tokenizer=tokenizer,
+            st_model = self.st_model,
+            faiss_index = self.faiss_index,
             dropout=dropout,
         )
 
@@ -354,3 +387,36 @@ class EntityLinkingLSTM(torch.nn.Module):
         scores = scores.values
 
         return tokens, scores
+
+
+def decode_input_ids(input_ids, tokenizer):
+    decoded_strings = []
+    for i in range(input_ids.shape[0]):
+        # Convert input IDs to tokens
+        tokens = tokenizer.convert_ids_to_tokens(input_ids[i, :], skip_special_tokens=True)
+        decoded_string = " ".join(tokens)
+        decoded_strings.append(decoded_string)
+
+    return decoded_strings 
+
+
+def retrieve_top_candidates(mention_strings, st_model, faiss_index):
+    query_embedding = st_model.encode(mention_strings, convert_to_tensor=False)
+    query_embedding = query_embedding / np.linalg.norm(query_embedding, keepdims=True)
+
+    topk = 50
+    distances, indices = faiss_index.search(query_embedding, topk)
+
+    matrix = [] 
+    for i in range(indices.shape[0]):
+        vectors = faiss_index.reconstruct_batch(indices[i, :])
+        matrix.append(vectors[None, :, :])
+
+    matrix = np.concatenate(matrix, axis=0)
+    matrix = torch.from_numpy(matrix)
+
+    # matrix = torch.concat([matrix, torch.ones_line(matrix)], axis=1)
+
+    # (BS, TOPK, HIDDEN_SIZE)
+    return matrix 
+
