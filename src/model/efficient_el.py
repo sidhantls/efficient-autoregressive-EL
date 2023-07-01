@@ -26,6 +26,7 @@ from src.utils import (
     MicroRecall,
 )
 
+import faiss
 
 class EfficientEL(LightningModule):
     @staticmethod
@@ -94,6 +95,9 @@ class EfficientEL(LightningModule):
 
         self.encoder.embeddings.word_embeddings.weight.requires_grad_(False)
 
+        self.faiss_index = faiss.read_index('data/entity_index.faiss')
+        print('Loaded entity faiss index')
+
         self.entity_detection = EntityDetectionFactor(
             self.hparams.max_length_span,
             self.hparams.dropout,
@@ -106,7 +110,9 @@ class EfficientEL(LightningModule):
             self.tokenizer.eos_token_id,
             self.encoder.embeddings.word_embeddings,
             longformer.lm_head,
-            self.hparams.dropout,
+            tokenizer = self.tokenizer,
+            faiss_index=self.faiss_index,
+            dropout = self.hparams.dropout,
         )
 
         self.micro_f1 = MicroF1()
