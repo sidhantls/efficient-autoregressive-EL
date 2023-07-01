@@ -34,17 +34,17 @@ class EfficientEL(LightningModule):
         parser.add_argument(
             "--train_data_path",
             type=str,
-            default="../data/aida_train_dataset.jsonl",
+            default="data/aida_train_dataset.jsonl",
         )
         parser.add_argument(
             "--dev_data_path",
             type=str,
-            default="../data/aida_val_dataset.jsonl",
+            default="data/aida_val_dataset.jsonl",
         )
         parser.add_argument(
             "--test_data_path",
             type=str,
-            default="../data/aida_test_dataset.jsonl",
+            default="data/aida_test_dataset.jsonl",
         )
         parser.add_argument("--batch_size", type=int, default=2)
         parser.add_argument("--lr_transformer", type=float, default=1e-4)
@@ -68,7 +68,7 @@ class EfficientEL(LightningModule):
         parser.add_argument(
             "--mentions_filename",
             type=str,
-            default="../data/mentions.json",
+            default="data/mentions.json",
         )
         parser.add_argument(
             "--entities_filename",
